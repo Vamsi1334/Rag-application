@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+!.yarn/versions
+
+# Next.js build output
+.next/
+out/
+build/
+dist/
+next-env.d.ts
+
+# Environment files
+# Only .env.example is committed. Everything else may hold real credentials.
+.env
+.env.*
+!.env.example
+
+# Test and coverage output
+coverage/
+.vitest/
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Deployment
+.vercel
+
+# Local document scratch space. Never commit anything a user uploaded.
+/uploads/
+/tmp/

@@ -1,0 +1,46 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens.
+ *
+ * Defined here rather than scattered through components so the eventual
+ * dashboard and chat UI have one place to change. Tailwind v4 reads the
+ * @theme block and generates utilities from it, so `--color-surface` becomes
+ * `bg-surface`, `text-surface` and so on.
+ */
+@theme {
+  --color-ink: #12171a;
+  --color-ink-soft: #48545a;
+  --color-muted: #6d7a80;
+  --color-surface: #ffffff;
+  --color-canvas: #f5f7f7;
+  --color-line: #dde3e3;
+  --color-accent: #0e6e62;
+  --color-accent-soft: #dcede8;
+  --color-warn: #8a5a0b;
+  --color-warn-soft: #f5ead5;
+  --color-danger: #9c2b33;
+  --color-danger-soft: #f6e1e2;
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-ink: #e5ebe8;
+    --color-ink-soft: #b5c0bc;
+    --color-muted: #8a9793;
+    --color-surface: #141b1a;
+    --color-canvas: #0d1312;
+    --color-line: #26302e;
+    --color-accent: #4ec3b1;
+    --color-accent-soft: #10302b;
+    --color-warn: #d9a441;
+    --color-warn-soft: #2c2413;
+    --color-danger: #e2757d;
+    --color-danger-soft: #321a1c;
+  }
+}
+
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+}
