@@ -18,7 +18,14 @@
  * is the shape they will have to fit.
  */
 
-export const PROVIDER_IDS = ['ollama', 'groq', 'openrouter', 'openai', 'google'] as const;
+export const PROVIDER_IDS = [
+  'ollama',
+  'groq',
+  'openrouter',
+  'openai',
+  'google',
+  'voyage',
+] as const;
 
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
@@ -108,6 +115,30 @@ export const PROVIDER_CATALOG: Record<ProviderId, ProviderDescriptor> = {
     capabilities: { chat: true, embeddings: true, streaming: true },
     implemented: false,
     notes: 'Free tier with a very large context window.',
+  },
+  /**
+   * Embeddings only, and the mirror image of Groq.
+   *
+   * Groq generates text and offers no embedding model. Voyage embeds text and
+   * offers no chat model. Declaring `chat: false` here means pointing
+   * LLM_PROVIDER at Voyage fails immediately with a clear message, rather than
+   * producing a confusing 404 from an endpoint that does not exist.
+   *
+   * Chosen over the alternatives for three reasons that matter to this
+   * project: a large free token allowance with no card required, output
+   * dimensions reducible to 256 (see EMBEDDING_DIMENSIONS for why that
+   * matters on a 512 MB cluster), and the same owner as MongoDB Atlas, which
+   * is where the vectors are going.
+   */
+  voyage: {
+    id: 'voyage',
+    label: 'Voyage AI',
+    defaultBaseUrl: 'https://api.voyageai.com/v1',
+    defaultModel: 'voyage-4-lite',
+    requiresApiKey: true,
+    capabilities: { chat: false, embeddings: true, streaming: false },
+    implemented: true,
+    notes: 'Embeddings only. Retrieval-tuned, with reducible output dimensions.',
   },
 };
 

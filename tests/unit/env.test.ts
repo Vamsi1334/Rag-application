@@ -18,8 +18,18 @@ describe('serverEnvSchema', () => {
     // deployment with no configuration quietly points at 127.0.0.1 and fails
     // with a connection refused, instead of naming the variable to set.
     expect(result.LLM_PROVIDER).toBe('groq');
-    expect(result.EMBEDDING_MODEL).toBe('nomic-embed-text');
-    expect(result.EMBEDDING_DIMENSIONS).toBe(768);
+    // Embeddings are a different vendor from generation: Groq cannot embed and
+    // Voyage cannot generate, so the two providers are set independently.
+    expect(result.EMBEDDING_PROVIDER).toBe('voyage');
+    /**
+     * No default, on purpose. The model is resolved per provider in the
+     * factory, exactly as LLM_MODEL relates to GROQ_MODEL. A shared default
+     * here would hand Voyage the name of an Ollama model.
+     */
+    expect(result.EMBEDDING_MODEL).toBeUndefined();
+    // Baked into the vector index. 256 rather than Voyage's 1024 default:
+    // four times the corpus on a 512MB cluster.
+    expect(result.EMBEDDING_DIMENSIONS).toBe(256);
     expect(result.OLLAMA_BASE_URL).toBe('http://127.0.0.1:11434');
   });
 

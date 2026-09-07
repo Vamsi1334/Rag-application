@@ -41,6 +41,7 @@ export async function createDocument(input: NewDocumentInput): Promise<DocumentD
 
   const doc: Omit<DocumentDoc, '_id'> = {
     userId: toObjectId(parsed.userId, 'userId'),
+    scope: parsed.scope,
     originalName: parsed.originalName,
     mimeType: parsed.mimeType,
     sizeBytes: parsed.sizeBytes,

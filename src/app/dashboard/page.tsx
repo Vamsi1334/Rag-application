@@ -115,11 +115,19 @@ export default async function DashboardPage() {
         </h2>
         <ul className="mt-4 flex flex-col gap-2 text-sm">
           <li>
+            <Link className="text-accent underline underline-offset-2" href="/chat">
+              Ask the document
+            </Link>{' '}
+            <span className="text-muted">
+              &middot; search the company document and answer from it, with sources
+            </span>
+          </li>
+          <li>
             <Link className="text-accent underline underline-offset-2" href="/ai-test">
               Model test
             </Link>{' '}
             <span className="text-muted">
-              &middot; ask the local model a question, without documents
+              &middot; the same model with no document, for comparison
             </span>
           </li>
           <li>

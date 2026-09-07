@@ -9,12 +9,15 @@ asked a question, the system finds the handful of passages from your own files
 most likely to contain the answer and puts them in the prompt. The model reads
 them fresh each time and answers from them, citing what it used.
 
-> **Status: Phase 4 of 17 complete.** Foundation, database, Google sign-in,
-> and a model layer that runs locally via Ollama or on a hosted provider
-> (Groq, OpenRouter, OpenAI) by changing one line. You can sign in, reach a protected dashboard, and
-> ask the local model a question. There is no document upload and no retrieval
-> yet: the model answers from what it learned in training, not from your
-> documents. That last step is what RAG adds.
+> **Status: Phase 5 of 17 complete.** Foundation, database, Google sign-in, a
+> model layer that switches provider by changing one line, and now the
+> embedding half of the stack: Voyage, chunking, and the vector index.
+>
+> You can sign in, reach a protected dashboard, and ask Groq a question. Text
+> can be chunked, embedded and stored with its owner. What does not exist yet
+> is document **upload**, PDF parsing and the retrieval query itself, so the
+> model still answers from training rather than from your documents. Those are
+> the next phase.
 
 ---
 
@@ -63,7 +66,7 @@ Four reasons, the last one decisive:
    and an ODM's translation layer sits directly on top of it.
 2. Mongoose's model registry conflicts with Next.js hot reload, which is why
    every Mongoose-plus-Next guide carries an `OverwriteModelError` workaround.
-3. Chunks hold 768-element float arrays; ODM casting on those is overhead for
+3. Chunks hold 256-element float arrays; ODM casting on those is overhead for
    no benefit.
 4. Auth.js's MongoDB adapter, arriving next phase, takes a native
    `MongoClient`. Using Mongoose would mean running both.
@@ -183,7 +186,11 @@ exist yet are optional, and the health check reports which are set.
 | `GROQ_MODEL` | Hosted generation | Defaults to `openai/gpt-oss-120b`. |
 | `OLLAMA_MODEL`, `OLLAMA_BASE_URL` | Local generation | Defaults suit a standard Ollama install. |
 | `LLM_TIMEOUT_MS` | Slow local models | 120000. Raise it if your machine is slower. |
-| `EMBEDDING_*` | Retrieval | Later phase. |
+| `VOYAGE_API_KEY` | Embeddings | Secret. Free at console.voyageai.com, no card. |
+| `VOYAGE_EMBEDDING_MODEL` | Embeddings | Defaults to `voyage-4-lite`. |
+| `EMBEDDING_PROVIDER` | Embeddings | Defaults to `voyage`. Separate from `LLM_PROVIDER`. |
+| `EMBEDDING_DIMENSIONS` | Embeddings | 256. Baked into the vector index; changing it means re-embedding. |
+| `CHUNK_SIZE`, `CHUNK_OVERLAP` | Chunking | 1800 and 200 characters. |
 
 `ENABLE_AI_TEST_ENDPOINT` used to be in this table. It kept `/api/ai/chat`
 switched off in production because that route had no authentication. The route
@@ -245,6 +252,15 @@ npm run dev:pretty
 | `npm test` | Vitest, single run |
 | `npm run test:watch` | Vitest, watch mode |
 | `npm run check` | lint + typecheck + test. Run this before committing. |
+
+Operational scripts, run directly rather than through npm because they act on
+a real database and should not be one typo away from a build command:
+
+| Command | Does |
+| --- | --- |
+| `npx tsx scripts/create-vector-index.ts` | Creates the Atlas vector index. Once per environment. |
+| `npx tsx scripts/ingest-document.ts <file>` | Ingests one document into the shared knowledge base. |
+| `npx tsx scripts/ingest-document.ts <file> --force` | Re-extracts and replaces its chunks. |
 
 ---
 
@@ -436,25 +452,590 @@ Rate limiting surfaces as HTTP 429 with a message saying so, rather than a
 generic failure, because on a free tier it is expected behaviour rather than a
 bug.
 
-### What about embeddings?
+---
 
-Groq does not offer an embedding model, and retrieval needs one. The plan for
-the next phase:
+## Embeddings
 
-| Option | Free tier | Dimensions | Note |
-| --- | --- | --- | --- |
-| **Ollama `nomic-embed-text`** | Unlimited, local | 768 | 274 MB, CPU-friendly. Free forever, works offline, documents never leave the machine. Cannot be reached from a deployed app. |
-| **Gemini `gemini-embedding-001`** | 1,500 req/day, no card | 3,072 (reducible) | The likely production choice. |
-| **Jina v4** | 1M tokens/month | 2,048 | Also viable. |
+### What an embedding is
 
-The likely shape is local embeddings in development and a hosted one in
-production, configured separately from generation via `EMBEDDING_PROVIDER`.
-That split already exists in the config for this reason.
+A model that turns text into a list of numbers. Nothing else.
 
-One thing to decide deliberately at that point: 3,072-dimension vectors are
-four times the storage of 768, which matters on a 512 MB free Atlas cluster.
-Gemini supports reducing the output dimensions, and that choice gets baked
-into the vector index.
+The clearest way to see it is colour. A colour on your screen is an embedding
+with three dimensions, red green blue:
+
+```
+red      = [255,   0,   0]
+crimson  = [220,  20,  60]      similar numbers, similar colour
+blue     = [  0,   0, 255]      far away
+```
+
+Three things fall out of that, and they are the whole idea:
+
+- Similar things get similar numbers
+- You can **measure** similarity with arithmetic, no understanding required
+- Every colour becomes exactly three numbers, whatever the colour
+
+A text embedding is the same, with 256 axes instead of 3, where the axes
+represent shades of meaning rather than shades of colour:
+
+```
+"how do I cancel my order"      = [0.21, -0.88, 0.13, ...]
+"I want to return this item"    = [0.19, -0.85, 0.15, ...]   close by
+"what is the capital of France" = [-0.67, 0.42, -0.91, ...]  far away
+```
+
+Search stops being "which document contains these words" and becomes "which
+stored numbers are nearest to my question's numbers". That is why retrieval
+finds the right paragraph even when it shares no vocabulary with the question.
+
+### Voyage embeds. Groq answers. Neither can do the other's job.
+
+This is the single most common point of confusion, so it is worth being blunt.
+
+| | **Groq** | **Voyage** |
+| --- | --- | --- |
+| Model | `openai/gpt-oss-120b` | `voyage-4-lite` |
+| Input | Text | Text |
+| Output | **Sentences** | **Numbers** |
+| Job | Writes the answer | Makes search possible |
+| Size | 120 billion parameters | Small, cheap, fast |
+| Can it write? | Yes | **No** |
+| Can it embed? | **No** | Yes |
+
+Groq publishes no embedding model. Voyage publishes no chat model. They are
+different companies making different kinds of model, which is why they have
+separate settings and separate keys.
+
+The provider catalog records this, so pointing `LLM_PROVIDER` at Voyage fails
+at configuration time with a clear message rather than at the first request
+with a 404:
+
+```ts
+voyage: { capabilities: { chat: false, embeddings: true, streaming: false } }
+groq:   { capabilities: { chat: true,  embeddings: false, streaming: true } }
+```
+
+### Why Voyage
+
+Four reasons, in order of how much they mattered:
+
+- **A large free token allowance with no card required.** Enough that a
+  learning project will not approach it.
+- **Output dimensions reducible to 256.** The one that decided it. See below.
+- **Owned by MongoDB**, which is where the vectors are going.
+- **32,000 token input**, so a chunk never has to be split to fit.
+
+Gemini scores better on public benchmarks and is also free. It was rejected
+because its free tier uses inputs to improve Google's products, and this
+application exists to read private documents. Once retrieval works, every
+request carries chunks of whatever you uploaded.
+
+### Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `VOYAGE_API_KEY` | **Secret.** Server-side only, never bundled. |
+| `VOYAGE_EMBEDDING_MODEL` | Defaults to `voyage-4-lite`. |
+| `EMBEDDING_PROVIDER` | `voyage`. Separate from `LLM_PROVIDER`. |
+| `EMBEDDING_DIMENSIONS` | `256`. Baked into the vector index. |
+| `EMBEDDING_MODEL` | Generic override. Usually unset. |
+| `CHUNK_SIZE` | `1800` characters. |
+| `CHUNK_OVERLAP` | `200` characters. |
+
+The Groq key is never used for embeddings and the Voyage key is never used for
+generation. There is deliberately no fallback between them: sending one to the
+other produces a 401 that reads like a bad key rather than crossed wiring.
+
+### Why 256 dimensions
+
+More dimensions means more room to record distinctions, so in theory better
+search. The gain is real and modest. The cost is not:
+
+```
+1024 dimensions  =  4 KB per chunk   →  ~130,000 chunks fills an M0 cluster
+ 256 dimensions  =  1 KB per chunk   →  four times the corpus
+```
+
+Your Atlas free tier is 512 MB **total**, shared between vectors, document
+text and indexes. Voyage's v4 models are trained so the most important
+information sits in the earliest numbers, which means truncating costs less
+accuracy than the fourfold reduction suggests.
+
+**This is the least reversible setting in the project.** The dimension is
+declared on the vector index and every stored vector must match it. Changing
+it means a new index and re-embedding every document ever uploaded, because a
+256-number question cannot be compared against 1024-number passages. Different
+spaces, not different scales.
+
+Voyage v4 accepts 256, 512, 1024 or 2048. Anything else is rejected, and the
+embedding service checks at configuration time rather than on first upload.
+
+### How a document flows through
+
+```
+document
+   ↓  text extraction        unpdf (pdf.js), per page
+   ↓  cleaning               cleanText:  normalise whitespace, keep paragraphs
+   ↓  chunking               chunkText:  1800 chars, 200 overlap
+   ↓  Voyage embedding       input_type: "document"
+   ↓  MongoDB                chunk + vector + userId + embeddingModel
+```
+
+And at query time:
+
+```
+question
+   ↓  Voyage embedding       input_type: "query"
+   ↓  Atlas $vectorSearch    filtered by userId INSIDE the search
+   ↓  relevant chunks
+   ↓  Groq                   writes the answer from those chunks
+```
+
+Note `input_type`. Voyage prepends its own instruction depending on whether it
+is embedding something being **stored** or something being **asked**, which
+produces vectors tuned for retrieval. Getting it backwards does not error, it
+just quietly makes search worse. That is why the interface has separate
+`embedDocuments` and `embedQuery` methods rather than one `embed` and a flag
+somebody forgets to set.
+
+### Chunking, and why the numbers are what they are
+
+A document cannot be embedded whole. Two hard limits:
+
+- The embedding model produces **one vector per input**. Embed fifty pages and
+  you get a single point that is the average of everything, which is near
+  nothing in particular.
+- The answering model has a fixed context window. Fifty pages does not fit in
+  8192 tokens alongside the question and the answer.
+
+So it is cut into passages, and the passage becomes the unit that gets
+embedded, retrieved and cited. Chunking quality sets a ceiling on retrieval
+quality that no model choice can lift.
+
+**1800 characters, roughly 450 tokens.** Retrieval fetches about five
+passages. Five at 450 tokens is ~2250, which fits inside 8192 with room for
+the question, instructions and answer.
+
+**200 characters of overlap, about 11 percent.** Without it, a sentence
+straddling a boundary is cut in half and neither half retrieves well.
+
+The chunker cuts at a paragraph break where it can, then a sentence ending,
+then a line break, then a space. Mid-word is the last resort. It also absorbs
+a short final chunk rather than leaving a 100-character orphan that embeds
+badly and cites poorly.
+
+Both numbers are environment variables because there is no correct answer,
+only one that suits a corpus. Smaller chunks match sharply but lose context;
+larger ones keep context but dilute the match.
+
+### MongoDB Vector Search
+
+The vector index is **not** created by `ensureIndexes`. Atlas Search indexes
+use a separate API and build asynchronously.
+
+```bash
+npx tsx scripts/create-vector-index.ts
+```
+
+Safe to run repeatedly. If the cluster does not allow programmatic creation,
+it prints the exact JSON for the Atlas UI. The definition:
+
+```json
+{
+  "name": "chunk_embedding_vector_index",
+  "type": "vectorSearch",
+  "definition": {
+    "fields": [
+      { "type": "vector", "path": "embedding", "numDimensions": 256, "similarity": "cosine" },
+      { "type": "filter", "path": "userId" },
+      { "type": "filter", "path": "documentId" }
+    ]
+  }
+}
+```
+
+**`userId` as a filter field is the security boundary, not an optimisation.**
+
+Vector search returns the N nearest vectors. Without a filter inside the
+search, the only way to enforce ownership is to fetch the global top matches
+and discard other people's afterwards. That fails twice over:
+
+1. It **silently returns fewer results than asked for**. Request 5, get the
+   global top 5, discard 4 belonging to other users, answer from 1. Retrieval
+   quality collapses and nothing reports an error.
+2. One missed filter and another user's document text reaches a prompt, and
+   from there an answer.
+
+Declared as a filter, Atlas restricts the search space before finding nearest
+neighbours. You get the top 5 **of that user's chunks**, which is both correct
+and better.
+
+**Cosine similarity** because it compares direction and ignores magnitude, so
+a long passage and a short one about the same subject score as similar.
+Euclidean distance would call them far apart purely because one vector is
+bigger. For text, meaning is direction.
+
+### User isolation
+
+Every chunk stores `userId` even though it could be derived from its parent
+document. That is not redundancy: a vector search filter can only reference a
+field on the row being searched, so deriving ownership would make the filter
+impossible and force it to run after ranking.
+
+The ownership rules, all of which have tests against a real MongoDB:
+
+- The user id comes from the **session, server-side**. A client-supplied
+  `userId` is never trusted to determine ownership.
+- Every id goes through `toObjectId`, so a body of `{"userId": {"$ne": null}}`
+  is rejected rather than matching every row in the collection.
+- Repository functions take `userId` and filter on it. There is no
+  `findChunkById`, only `listChunksForDocument(documentId, userId)`.
+- Another user's data returns empty rather than throwing. A distinguishable
+  error would confirm the row exists.
+
+### Never mix models in one index
+
+Two embedding models produce coordinates in unrelated spaces. Vectors from
+model A and model B can be the same length and still mean nothing to each
+other, so comparing them returns a number that looks like a similarity score
+and is noise. Nothing errors. Search just quietly returns nonsense.
+
+Which is why `embeddingModel` is stored on every chunk. It is what makes a
+model change detectable and migratable rather than silently corrupting.
+
+---
+
+## Retrieval, and asking the document a question
+
+`/chat` is where the application does what it was built to do. `/ai-test` is
+the same model with the middle removed, kept deliberately so the two can be
+compared:
+
+```
+/ai-test   question ------------------------------> Groq -> answer
+/chat      question -> embed -> search -> passages -> Groq -> answer
+```
+
+Ask both the same question about your document. `/ai-test` will produce a
+confident, fluent, entirely invented answer, because the model has never seen
+the file. Those three extra steps are the whole difference.
+
+### The instruction that does the real work
+
+Retrieval alone does not stop invention. It puts the right text in front of the
+model; something still has to tell the model that the text is the only thing it
+may use. That is `src/server/rag/prompts.ts`, and the load-bearing lines are:
+
+> Use only the information in the passages below. Do not use anything you know
+> from training.
+>
+> If the passages do not contain the answer, say exactly that you could not
+> find it in the document. Do not guess.
+
+When nothing matches, **the model is not called at all.** Asking it to answer
+from zero passages would spend a request to produce exactly the failure this
+application exists to prevent, and an empty corpus is the state every new
+deployment starts in.
+
+### Every answer shows its passages
+
+The response carries the passages the model was given, and `/chat` renders them
+under the answer. This is not a nicety. An answer without its sources is an
+answer whose mistakes are undetectable, and the mistakes are the reason all
+this machinery exists.
+
+Each one shows its similarity score. Roughly: above 0.75 is a strong match,
+0.6 to 0.75 is related, below that is probably noise. Five passages all scoring
+around 0.4 means the document does not cover the question, whatever the answer
+says.
+
+### Prompt injection
+
+The passages come out of a document, and a document can contain any words at
+all, including "ignore your previous instructions". Once that text is in a
+prompt, a model sees no difference between an instruction we wrote and one that
+arrived inside a PDF.
+
+Each passage is fenced, and the system prompt states that anything between
+fences is quoted material rather than a command. That is the standard
+mitigation and it is not airtight; nothing purely prompt-based is. What limits
+the damage here is that there is little to steal: no tools, no function calling,
+no ability to send mail or write to the database, and the answer goes back to
+the person who asked. Proper hardening belongs with the security phase.
+
+### The context budget
+
+A model's context window is one allowance shared by the instructions, the
+passages, the question and the answer it has yet to write. The answer's share
+is what gets squeezed, because it is the only part not yet on the page.
+
+Send five unusually long passages and the model has room for two sentences. It
+does not error; it stops mid-sentence and `finishReason` comes back as
+`length`. So passages are added in rank order until a ceiling is reached and
+the rest are dropped. Losing the fifth-best passage is a small cost. A
+truncated answer is a visible failure.
+
+### Environment variables
+
+| Variable | Used for |
+| --- | --- |
+| `RETRIEVAL_TOP_K` | `5`. How many passages a question retrieves. |
+| `RETRIEVAL_CONTEXT_SHARE` | `0.5`. Share of the context window passages may occupy. |
+
+Too few passages and the answer misses something the document says, because the
+passage covering it ranked sixth. Too many and the useful one is diluted, the
+model has more room to wander, and every question costs more of the window.
+
+### When search is unavailable
+
+Atlas builds search indexes asynchronously, so a freshly created one is
+genuinely absent for a while, and a typo in its name looks identical. Both
+produce:
+
+> Document search is not available right now. The search index is missing,
+> still building, or this database does not support vector search.
+
+Check the index at Atlas, Search and Vector Search. You want
+`chunk_embedding_vector_index` showing **READY**, **Queryable**, and 100% of
+documents indexed. Anything less than 100% usually means stored vectors do not
+match the length the index was built for.
+
+---
+
+## Document ingestion
+
+### One shared knowledge base. Nobody uploads anything.
+
+This version answers questions about **one company document**, curated by
+whoever runs the project. A signed-in user asks questions. There is no upload
+button, no upload page and no upload endpoint, for anybody.
+
+That is the product decision, and it is also the security model:
+
+- Ingestion runs from a **terminal script**, not an HTTP route.
+- Authorization is **possession of the server's credentials**. Not a role, not
+  a session, not a permission check.
+- There is no endpoint to find, no session to forge, and no bug in a permission
+  check to exploit, because none of those things exist.
+
+A role system guarding an admin route would be more code doing a weaker job. If
+per-user uploads are wanted later, that is the point to add roles and a route
+deliberately, and `tests/unit/ingestion-surface.test.ts` fails the moment
+ingestion becomes reachable over HTTP, so the decision cannot be made by
+accident.
+
+Shared documents are stored under a fixed owner id,
+`KNOWLEDGE_BASE_OWNER_ID`, rather than being ownerless. That keeps every query
+filtering on one `userId` field. When per-user documents arrive, the retrieval
+filter becomes:
+
+```js
+{ userId: { $in: [theSignedInUser, KNOWLEDGE_BASE_OWNER_ID] } }
+```
+
+One field, one operator. The alternative, an `$or` across `userId` and a
+nullable `isShared`, is where ownership bugs live.
+
+### Supported formats
+
+| Format | Notes |
+| --- | --- |
+| `.pdf` | Text-based only. See the scanned-PDF note below. |
+| `.md` | Markdown |
+| `.txt` | Plain text |
+
+**A scanned PDF is rejected, on purpose.** A scan is a stack of photographs. It
+opens, it has the right number of pages, it looks completely normal, and it
+contains zero extractable characters. Allowed through, it becomes a document
+marked `ready` with no chunks, and months later a chat feature that answers
+"I could not find that in your documents" about a file sitting right there in
+the list. Nothing in the logs would explain why.
+
+So an empty extraction fails immediately with a message naming the likely
+cause. OCR is a later phase.
+
+### Provide the document
+
+Put the file anywhere on the machine running the script. Nothing is uploaded
+and nothing is copied into the repository.
+
+```bash
+mkdir -p docs
+# then put your PDF in ./docs/
+```
+
+`docs/` is git-ignored. A company document is not repository content, and a
+PDF committed once stays in the history after it is deleted.
+
+### Run it
+
+The vector index has to exist first, and only needs creating once per
+environment:
+
+```bash
+npx tsx scripts/create-vector-index.ts
+npx tsx scripts/ingest-document.ts ./docs/company-handbook.pdf
+```
+
+Output:
+
+```
+Ingesting into the shared knowledge base
+  file        company-handbook.pdf
+  type        application/pdf
+  size        842.1 KB
+  provider    voyage
+  model       voyage-4-lite
+  dimensions  256
+  chunk size  1800 chars, 200 overlap
+  force       false
+
+Ingestion complete.
+  documentId  6a1f...c33
+  characters  128204
+  pages       46
+  chunks      79
+  took        4.2s
+```
+
+**Re-running the same file does nothing.** The document is identified by a
+SHA-256 hash of its contents, so a second run is recognised and skipped rather
+than quietly doubling the corpus, which would return the same passage twice for
+every question.
+
+To re-extract and replace its chunks, which is what you want after changing
+`CHUNK_SIZE` or the embedding model:
+
+```bash
+npx tsx scripts/ingest-document.ts ./docs/company-handbook.pdf --force
+```
+
+The script reads `.env.local` the same way `next dev` does. It needs
+`MONGODB_URI` and `VOYAGE_API_KEY` and nothing else.
+
+### It will take a few minutes, and that is the rate limit
+
+Voyage's **free trial allows 3 requests and 10,000 tokens per minute** until a
+payment method is added. Tier 1 with one is 2,000 requests and 16,000,000
+tokens, which is three orders of magnitude more room.
+
+That ceiling changes the shape of the problem rather than just the numbers.
+10,000 tokens a minute is about 22 passages, so a sixty-page PDF **cannot be
+embedded in one request at any batch size**, and retrying does not help: the
+request itself is over the limit. So ingestion does three things:
+
+1. **Batches by estimated tokens, not by passage count.** Counting passages was
+   the original bug. Forty-nine chunks of a real document came to roughly
+   17,000 tokens in a single request, which Voyage refused on arrival, every
+   time.
+2. **Paces itself to both published limits**, waiting the longer of the two
+   gaps they imply. Pacing on requests alone is not enough, and the failure is
+   not subtle: three requests a minute at 8,000 tokens each honours the request
+   rate perfectly and breaches a 10,000-token minute twice over.
+3. **Retries a 429**, honouring `Retry-After` when the server sends it. On a
+   free tier a rate limit is an ordinary event, not an exceptional one, so
+   waiting it out is the normal path rather than error handling.
+
+The script says up front how long it expects to wait:
+
+```
+Embedding 62 passages in 4 requests, paced to 3 requests and
+10000 tokens per minute (about 139s of waiting)
+```
+
+Once you add a payment method, two lines in `.env.local` remove the wait
+entirely:
+
+```dotenv
+EMBEDDING_REQUESTS_PER_MINUTE=2000
+EMBEDDING_TOKENS_PER_MINUTE=16000000
+```
+
+### Environment variables
+
+Ingestion uses what embedding already needed, plus four settings for the rate
+limit:
+
+| Variable | Used for |
+| --- | --- |
+| `MONGODB_URI` | **Secret.** Where documents and chunks are stored. |
+| `VOYAGE_API_KEY` | **Secret.** Server-side only, never bundled. |
+| `EMBEDDING_DIMENSIONS` | Must match the vector index. Changing it means re-ingesting. |
+| `CHUNK_SIZE` | `1800` characters. |
+| `CHUNK_OVERLAP` | `200` characters. |
+| `EMBEDDING_MAX_TOKENS_PER_REQUEST` | `8000`. Below the per-minute ceiling on purpose. |
+| `EMBEDDING_REQUESTS_PER_MINUTE` | `3`. From the vendor's limits page. |
+| `EMBEDDING_TOKENS_PER_MINUTE` | `10000`. From the same page. |
+| `EMBEDDING_MAX_RETRIES` | `4`. Retries for a rate-limited request. |
+
+### Check what happened
+
+Every run leaves a row you can read. In Atlas, open **Browse Collections**.
+
+`documents` — one row, and the field to look at is `status`:
+
+| `status` | Meaning |
+| --- | --- |
+| `ready` | Done. `chunkCount` is how many passages are searchable. |
+| `failed` | Read `error.safeMessage` on the same row. |
+| `extracting` / `chunking` / `embedding` | Still running, or the process was killed mid-run. Re-run with `--force`. |
+
+`document_chunks` — one row per passage. A healthy row has:
+
+- `embedding`: an array of exactly 256 numbers
+- `embeddingModel`: `voyage-4-lite`
+- `scope`: `shared`
+- `sourceName`: the original filename, so a citation can name it
+- `pageNumber`: present for PDFs, absent for `.md` and `.txt`
+
+Counting from the shell instead:
+
+```js
+db.documents.find({}, { originalName: 1, status: 1, chunkCount: 1 })
+db.document_chunks.countDocuments({ documentId: ObjectId("...") })
+```
+
+`chunkCount` on the document and the real count in `document_chunks` should
+match. They are written in that order for exactly this reason: the count is set
+last, only after every chunk is on disk.
+
+### A document is never half-ingested
+
+MongoDB has no transaction spanning "call an external API forty times, then
+write four hundred rows", and reaching for one would be the wrong tool. What
+matters is not that the write is atomic. It is that **the status never lies**.
+
+So the order is deliberate:
+
+1. Embed everything first, in memory. Nothing is written yet.
+2. Only once every vector exists, delete the old chunks and insert the new ones.
+3. Only once every chunk is stored does the document become `ready`.
+
+If embedding fails at chunk 70 of 100, no chunks were written at all and the
+document is marked `failed` with a reason. The corpus is never left holding a
+partially embedded document that looks complete and answers questions from two
+thirds of a file.
+
+The cost is holding the vectors in memory before writing, which for one company
+document is a few megabytes.
+
+### When it fails
+
+| What the script prints | Cause |
+| --- | --- |
+| `No extractable text found. The PDF appears to be scanned...` | Images of text, not text. Needs OCR, which is a later phase. |
+| `The PDF could not be read. It may be corrupt, or protected with a password.` | Exactly that. |
+| `Unsupported file type` | Not `.pdf`, `.md` or `.txt`. Printed before anything is read. |
+| `VOYAGE_API_KEY is required for the "voyage" provider.` | Not set in `.env.local`. |
+| `The embedding service rejected our credentials.` | Key is set but wrong or revoked. |
+| `Embedding rate limit reached. Wait a moment and try again.` | Voyage rate limit. Re-run with `--force`. |
+| `The embedding service reports no remaining credit.` | Free tier exhausted. |
+| `...dimensions, but the vector index expects...` | `EMBEDDING_DIMENSIONS` no longer matches the index. Recreate the index, then re-ingest with `--force`. |
+
+Nothing printed by the script contains a key, a connection string or the
+contents of the document. The failure path deliberately prints no stack trace,
+because driver and parser errors carry both connection strings and fragments of
+document text, and this runs in terminals and CI logs.
 
 ---
 
@@ -891,7 +1472,11 @@ ai-document-assistant/
 ├── eslint.config.mjs         Includes the client/server import boundary rule
 ├── next.config.ts            Security headers, strict build
 ├── vitest.config.ts
-├── scripts/                  Reproducible operational tasks       [later]
+├── docs/                     Source documents for ingestion. Git-ignored.
+├── scripts/
+│   ├── bootstrap.ts          Loads .env.local and stubs server-only for tsx
+│   ├── create-vector-index.ts  The Atlas vector index. Once per environment.
+│   └── ingest-document.ts    The ONLY way a document enters the corpus
 ├── src/
 │   ├── app/
 │   │   ├── page.tsx          Home page and status dashboard
@@ -933,15 +1518,24 @@ ai-document-assistant/
 │   │   │   └── repositories/ userId required on every owned-data function
 │   │   ├── health/report.ts  Shared by the API route and home page
 │   │   ├── http/route.ts     The wrapper every API route uses
-│   │   ├── ingestion/        extract, clean, chunk, embed         [phase 5-6]
+│   │   ├── ingestion/        Empty. Merged into rag/; its README says why.
 │   │   ├── observability/
 │   │   │   ├── errors.ts     The error taxonomy
 │   │   │   ├── logger.ts     Pino, request-aware
 │   │   │   ├── redaction.ts  Allowlist filter for log metadata
 │   │   │   └── request-context.ts
-│   │   ├── rag/              Retrieval and answering              [phase 5-9]
+│   │   ├── rag/
+│   │   │   ├── extract-text.ts   The only file that knows about formats
+│   │   │   ├── chunking.ts       Pure. No imports, no server-only guard.
+│   │   │   ├── embedding-service.ts  Vendor-independent embedding rules
+│   │   │   ├── ingest-document.ts    Sequences the pipeline for one file
+│   │   │   ├── retrieve.ts       Embed the question, search the corpus
+│   │   │   ├── build-context.ts  Fit passages inside the token budget
+│   │   │   ├── prompts.ts        Every prompt, including the grounding rules
+│   │   │   ├── answer.ts         Retrieve, assemble, generate
+│   │   │   └── (citations verification)                     [phase 9]
 │   │   ├── security/         Rate limiting, file validation       [phase 12]
-│   │   └── storage/          Uploaded originals                   [phase 5]
+│   │   └── storage/          Uploaded originals                   [later]
 │   ├── types/
 │   ├── instrumentation.ts    Validates config once at startup
 │   ├── types/next-auth.d.ts  Adds `id` to the session type
@@ -951,14 +1545,16 @@ ai-document-assistant/
     ├── integration/          Real MongoDB, includes cross-user isolation
     ├── stubs/                server-only shim so server code is testable
     ├── e2e/                  [phase 14]
-    └── fixtures/
+    └── fixtures/make-pdf.ts  Builds real PDFs, including text-less ones
 ```
 
 ---
 
 ## What is implemented
 
-**Phases 1 and 2 are complete and verified.**
+**Phases 1 through 7 are complete and verified.** The loop is closed: a
+question is embedded, searched against the corpus, and answered from what came
+back, with the passages shown alongside.
 
 ### Phase 1: foundation
 
@@ -1075,6 +1671,80 @@ ai-document-assistant/
 - **220 tests**, including a suite for the route itself: no session, no model
   call; malformed body while signed out, still 401; and the provider's own
   error text never reaching the caller.
+
+### Phase 5: embeddings
+
+- **Voyage provider** implementing `EmbeddingProvider`: batching at 128 inputs
+  per request, `input_type` set per call so a passage and a question are
+  embedded differently, and `output_dimension` requested explicitly.
+- **Rows reordered by the index Voyage reports**, not by arrival. A shuffled
+  response would otherwise store every chunk against the wrong text, and
+  nothing about that failure throws.
+- **Every value checked** for length and finiteness before it is returned. A
+  `NaN` in a vector poisons every later comparison silently.
+- **Chunking service**: paragraph, then sentence, then line, then space, then a
+  hard cut. Overlap clamped so a pathological input cannot loop forever.
+- **`create-vector-index.ts`**, because a search index is schema and belongs in
+  the repository rather than in someone's memory of a dashboard.
+- **Separate keys, no fallback.** The Groq key is never used for embeddings and
+  the Voyage key is never used for generation, so crossed wiring fails as a
+  configuration error rather than a confusing 401.
+
+### Phase 6: document ingestion
+
+- **One shared company knowledge base.** No upload route, no upload UI, no
+  upload for anybody. Ingestion runs from a terminal script, so authorization
+  is possession of the server's credentials rather than a role check on a
+  public endpoint.
+- **PDF, Markdown and plain text**, through unpdf (pdf.js): pure JavaScript, no
+  native binary to compile, and text returned per page so a citation can name
+  one.
+- **A scanned PDF is rejected with a message saying so.** It is the failure
+  that would otherwise be invisible: a document marked `ready` with no chunks,
+  and a chat feature that says "I could not find that" about a file sitting
+  right there.
+- **Status never lies.** Everything is embedded in memory before anything is
+  written, so a failure at chunk 70 of 100 leaves zero chunks stored and the
+  document marked `failed` with a reason, rather than a corpus that answers
+  from two thirds of a file and looks healthy.
+- **Re-running is a no-op.** Documents are identified by a SHA-256 of their
+  contents, so a second run cannot silently double the corpus. `--force`
+  replaces the chunks rather than adding to them.
+- **Page numbers only where they are real.** A `.md` file gets none, because a
+  citation pointing at an invented page looks checkable and is not.
+- **Vector length checked immediately before the write.** A mismatch does not
+  error at write time: the rows land, Atlas quietly refuses to index them, and
+  search returns nothing.
+- **401 tests.** The ingestion suite runs against a real MongoDB with real PDFs
+  built byte by byte, and mocks only the call to Voyage. Among them is a
+  regression test asserting that no route, page or component can reach
+  ingestion, which fails the moment someone adds an upload endpoint.
+
+### Phase 7: retrieval and grounded answers
+
+- **`POST /api/ai/ask` and the `/chat` page.** Embed the question, search the
+  corpus, answer from the passages, return them alongside so the answer can be
+  checked rather than trusted.
+- **The ownership filter runs INSIDE `$vectorSearch`**, not in a later
+  `$match`. Filtering afterwards would fetch the global nearest passages and
+  then discard other people's, which silently returns fewer results and puts
+  another user's text one mistake away from a prompt.
+- **`userId` comes from the session, never the request.** The request schema has
+  no user field at all, because a client that could name the user could name any
+  user.
+- **No model call when nothing matches.** An empty corpus answers "I could not
+  find that" rather than inventing something, which is the state every new
+  deployment starts in.
+- **Passages are fenced and declared as quoted material**, so a document
+  containing "ignore your previous instructions" is read as text rather than
+  obeyed.
+- **A context budget** that drops the lowest-ranked passages rather than letting
+  them crowd out the room the answer needs.
+- **An unavailable or still-building index says so**, instead of arriving as a
+  bare 500 with the reason in a log nobody opened.
+- **456 tests.** The security boundary is pinned down by asserting the exact
+  aggregation pipeline, because `$vectorSearch` runs inside Atlas Search and
+  cannot be executed against the in-memory MongoDB the tests use.
 
 ### Verified behaviour
 
@@ -1194,10 +1864,8 @@ database password is the only thing protecting your data.
 
 | Phase | Delivers |
 | --- | --- |
-| **5** | The Ollama embedding provider, and the first document into the database |
-| **5** | The first working retrieval loop: upload text, chunk, embed, search, answer |
-| **6** | Real document ingestion: PDF, DOCX, Markdown, file validation, the resumable pipeline |
-| **7** | Chunking and cleaning quality |
+| **8** | Retrieval quality: score thresholds, deduplication, hybrid search |
+| **9** | Answer quality: citation verification against what was retrieved |
 | **8** | Retrieval quality: thresholds, deduplication, hybrid search |
 | **9** | Answer quality, grounding and source citations |
 | **10** | Conversations, history and query rewriting |

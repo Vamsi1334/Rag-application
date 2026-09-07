@@ -140,6 +140,27 @@ export interface EmbeddingProviderConfig {
   dimensions: number;
   documentPrefix: string;
   queryPrefix: string;
+  /**
+   * Estimated tokens allowed in one request.
+   *
+   * Providers publish a tokens-per-minute limit, and on a free tier it can be
+   * low enough that a single naive batch breaches it on its own. Batching by
+   * count alone is what makes that failure look like bad luck instead of
+   * arithmetic.
+   */
+  maxTokensPerRequest: number;
+  /** Requests per minute the provider paces itself to. */
+  requestsPerMinute: number;
+  /**
+   * Tokens per minute the provider paces itself to.
+   *
+   * Needed alongside `requestsPerMinute` because either one can bind first.
+   * Pacing on requests alone lets three large batches breach a token ceiling
+   * while respecting the request rate perfectly.
+   */
+  tokensPerMinute: number;
+  /** Retries for a rate-limited request before giving up. */
+  maxRetries: number;
 }
 
 export type LLMProviderFactory = (config: LLMProviderConfig) => LLMProvider;

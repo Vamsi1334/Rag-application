@@ -40,6 +40,10 @@ const embeddingConfig: EmbeddingProviderConfig = {
   dimensions: 768,
   documentPrefix: 'search_document: ',
   queryPrefix: 'search_query: ',
+  maxTokensPerRequest: 8000,
+  requestsPerMinute: 3,
+  tokensPerMinute: 10_000,
+  maxRetries: 4,
 };
 
 function fakeLLM(config: LLMProviderConfig): LLMProvider {

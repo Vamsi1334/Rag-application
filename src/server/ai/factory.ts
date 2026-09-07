@@ -53,15 +53,58 @@ const PROVIDER_KEY_ENV = {
   openrouter: 'OPENROUTER_API_KEY',
   openai: 'OPENAI_API_KEY',
   google: 'GOOGLE_AI_API_KEY',
+  voyage: 'VOYAGE_API_KEY',
 } as const satisfies Partial<Record<ProviderId, keyof ServerEnv>>;
 
-/** LLM_API_KEY wins, then the provider's own key. */
-function resolveApiKey(env: ServerEnv, provider: ProviderId): string | undefined {
-  if (env.LLM_API_KEY) return env.LLM_API_KEY;
+/**
+ * Where each provider's EMBEDDING model variable lives.
+ *
+ * Separate from PROVIDER_MODEL_ENV above because a provider can offer both
+ * kinds of model with different names. Ollama is the live example: it runs
+ * `llama3.2:1b` for chat and `nomic-embed-text` for embeddings, and one
+ * variable could not hold both.
+ */
+const EMBEDDING_MODEL_ENV = {
+  voyage: 'VOYAGE_EMBEDDING_MODEL',
+} as const satisfies Partial<Record<ProviderId, keyof ServerEnv>>;
 
+/** EMBEDDING_MODEL wins, then the provider's own variable, then the catalog. */
+export function resolveEmbeddingModel(env: ServerEnv, provider: ProviderId): string {
+  if (env.EMBEDDING_MODEL) return env.EMBEDDING_MODEL;
+
+  const key = (EMBEDDING_MODEL_ENV as Partial<Record<ProviderId, keyof ServerEnv>>)[provider];
+  const providerSpecific = key ? env[key] : undefined;
+  if (typeof providerSpecific === 'string' && providerSpecific.length > 0) {
+    return providerSpecific;
+  }
+
+  // Ollama's catalog default is its CHAT model, which would be wrong here.
+  // Its embedding model has no catalog entry, so it falls back to the one
+  // name that is correct for it.
+  if (provider === 'ollama') return 'nomic-embed-text';
+
+  return getProviderDescriptor(provider).defaultModel;
+}
+
+/**
+ * The provider's own credential, ignoring any generic override.
+ *
+ * Kept separate because the two overrides are not interchangeable: LLM_API_KEY
+ * must not be handed to the embedding provider. With Groq generating and
+ * Voyage embedding, they are different vendors with different keys, and
+ * sending one to the other would be a 401 that looks like a bad key rather
+ * than a wiring mistake.
+ */
+function resolveProviderKey(env: ServerEnv, provider: ProviderId): string | undefined {
   const key = (PROVIDER_KEY_ENV as Partial<Record<ProviderId, keyof ServerEnv>>)[provider];
   const value = key ? env[key] : undefined;
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/** LLM_API_KEY wins, then the provider's own key. Generation only. */
+function resolveApiKey(env: ServerEnv, provider: ProviderId): string | undefined {
+  if (env.LLM_API_KEY) return env.LLM_API_KEY;
+  return resolveProviderKey(env, provider);
 }
 
 /** LLM_MODEL wins, then the provider's own variable, then the catalog. */
@@ -146,21 +189,27 @@ export function getEmbeddingConfig(): EmbeddingProviderConfig {
     'EMBEDDING_BASE_URL',
   );
 
-  assertApiKey(
-    env.EMBEDDING_API_KEY,
-    descriptor.requiresApiKey,
-    'EMBEDDING_API_KEY',
-    env.EMBEDDING_PROVIDER,
-  );
+  // EMBEDDING_API_KEY is the generic override; the provider's own key is the
+  // normal path, so both are accepted and the error names whichever is
+  // actually missing rather than the one nobody sets.
+  const apiKey = env.EMBEDDING_API_KEY ?? resolveProviderKey(env, env.EMBEDDING_PROVIDER);
+  const keyVariable =
+    (PROVIDER_KEY_ENV as Partial<Record<ProviderId, string>>)[env.EMBEDDING_PROVIDER] ??
+    'EMBEDDING_API_KEY';
+  assertApiKey(apiKey, descriptor.requiresApiKey, keyVariable, env.EMBEDDING_PROVIDER);
 
   return {
     provider: env.EMBEDDING_PROVIDER,
-    model: env.EMBEDDING_MODEL,
+    model: resolveEmbeddingModel(env, env.EMBEDDING_PROVIDER),
     baseUrl,
-    ...(env.EMBEDDING_API_KEY ? { apiKey: env.EMBEDDING_API_KEY } : {}),
+    ...(apiKey ? { apiKey } : {}),
     dimensions: env.EMBEDDING_DIMENSIONS,
     documentPrefix: env.EMBEDDING_DOC_PREFIX,
     queryPrefix: env.EMBEDDING_QUERY_PREFIX,
+    maxTokensPerRequest: env.EMBEDDING_MAX_TOKENS_PER_REQUEST,
+    requestsPerMinute: env.EMBEDDING_REQUESTS_PER_MINUTE,
+    tokensPerMinute: env.EMBEDDING_TOKENS_PER_MINUTE,
+    maxRetries: env.EMBEDDING_MAX_RETRIES,
   };
 }
 

@@ -40,6 +40,53 @@ export interface OwnedDoc extends BaseDoc {
 }
 
 // ---------------------------------------------------------------------------
+// Ownership scope
+// ---------------------------------------------------------------------------
+
+/**
+ * Who a document is for.
+ *
+ * `user`   one person uploaded it and only they can reach it
+ * `shared` the company knowledge base, readable by every signed-in user
+ *
+ * ------------------------------------------------------------------
+ * Why shared documents still carry a userId
+ * ------------------------------------------------------------------
+ * The obvious alternative is to make `userId` optional and null for shared
+ * rows. That was rejected, and the reason is worth writing down because it
+ * looks like the cleaner option at first glance.
+ *
+ * `userId` is the filter field on the Atlas vector index, and that filter is
+ * the security boundary of this application. With a sentinel owner, a search
+ * across both a user's own documents and the shared knowledge base is:
+ *
+ *     userId: { $in: [theUser, KNOWLEDGE_BASE_OWNER_ID] }
+ *
+ * One field, one operator. With a nullable column it becomes an `$or` across
+ * two fields, and every future query has to remember to include the second
+ * branch. Ownership bugs live in exactly that kind of forgetting, and the cost
+ * of one is another user's document text reaching somebody's answer.
+ *
+ * So the sentinel is not pretending a person owns the knowledge base. It is
+ * keeping one uniform mechanism for "which rows may this search see", with
+ * `scope` recording the intent explicitly for every other kind of query.
+ */
+export const DOCUMENT_SCOPES = ['user', 'shared'] as const;
+export type DocumentScope = (typeof DOCUMENT_SCOPES)[number];
+
+/**
+ * The synthetic owner of shared knowledge-base rows.
+ *
+ * Deliberately not a generated ObjectId. A real one encodes a timestamp and a
+ * machine identifier, so it looks like a genuine account; this is visibly
+ * synthetic at a glance in Atlas, in a log line, and in a query.
+ *
+ * No user can ever be issued this id: Auth.js generates real ObjectIds, and
+ * one made of twenty-three zeroes is not reachable by that path.
+ */
+export const KNOWLEDGE_BASE_OWNER_ID = '000000000000000000000001';
+
+// ---------------------------------------------------------------------------
 // users
 // ---------------------------------------------------------------------------
 
@@ -99,6 +146,14 @@ export const TERMINAL_DOCUMENT_STATUSES: readonly DocumentStatus[] = ['ready', '
  * `progress` with real ingestion, `embeddingModel` with embeddings.
  */
 export interface DocumentDoc extends OwnedDoc {
+  /**
+   * Whether this belongs to one person or to the shared knowledge base.
+   *
+   * Optional in the type because rows written before this field existed do not
+   * have it. Absent means `user`, which is the safe default: an old row is
+   * treated as private rather than accidentally becoming readable by everyone.
+   */
+  scope?: DocumentScope | undefined;
   originalName: string;
   mimeType: string;
   sizeBytes: number;
@@ -149,9 +204,27 @@ export interface DocumentDoc extends OwnedDoc {
  */
 export interface DocumentChunkDoc extends OwnedDoc {
   documentId: ObjectId;
+  /** Mirrors the parent document. Absent means `user`. */
+  scope?: DocumentScope | undefined;
   /** Position within the document. Lets neighbouring chunks be fetched. */
   chunkIndex: number;
   content: string;
+  /**
+   * The document's name, copied onto the chunk.
+   *
+   * Denormalised so a citation can be rendered from the chunk alone. Retrieval
+   * returns chunks, and joining back to the parent document for every one of
+   * them just to print a filename would be a lookup per result.
+   */
+  sourceName?: string | undefined;
+  /**
+   * 1-based page the chunk came from, where the format provides it.
+   *
+   * Absent for plain text and Markdown, which have no pages. Never guessed: a
+   * citation pointing at an invented page number is worse than one with no
+   * page at all, because it looks checkable and is not.
+   */
+  pageNumber?: number | undefined;
   /** Precomputed so prompt budgeting needs no tokenizer at query time. */
   tokenCount: number;
   /**

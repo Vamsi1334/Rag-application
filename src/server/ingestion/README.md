@@ -1,14 +1,15 @@
 # Ingestion
 
-Turning an uploaded file into searchable chunks:
+**This folder is empty and stays empty. The code lives in `../rag/`.**
 
-    extract -> clean -> chunk -> embed -> store
+The original plan put ingestion here and retrieval in `rag/`. Building it in
+phase 6 showed why that split was wrong: the two halves share `chunking.ts` and
+`embedding-service.ts`, and retrieval is only correct if it embeds a question
+with the same model that embedded the passages. Two folders would have put that
+constraint on opposite sides of the codebase from itself.
 
-**Phases 5 and 6.** Empty by design.
+So `extract -> clean -> chunk -> embed -> store` is in `../rag/`, alongside the
+retrieval half it has to agree with. See `../rag/README.md`.
 
-Planned files:
-- `pipeline.ts` — the resumable state machine that advances a document one step
-  at a time, so a large file never has to finish inside one request
-- `extract/` — one extractor per format, all returning the same shape
-- `clean.ts` — strips repeated headers, footers and page numbers before chunking
-- `chunk.ts` — structure-aware splitting with overlap and citation metadata
+Kept rather than deleted so that a link or a note pointing here still lands
+somewhere that explains the move.

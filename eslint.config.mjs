@@ -23,6 +23,23 @@ const config = [
   },
 
   {
+    /**
+     * Operational scripts are the exception.
+     *
+     * They are run by a person at a terminal, and printing to that terminal is
+     * their entire interface. Routing that through the structured logger would
+     * produce JSON nobody wants to read, for output that never reaches a
+     * production log in the first place.
+     *
+     * The rule still applies everywhere else, which is what it is for.
+     */
+    files: ['scripts/**/*.ts', 'scripts/**/*.mts'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+
+  {
     // Scoped to TypeScript files because the @typescript-eslint plugin is only
     // registered for them by eslint-config-next. An unscoped override would
     // apply to .mjs config files too and fail to resolve the plugin.

@@ -69,7 +69,27 @@ describe('matcher', () => {
   it('runs only on protected paths', () => {
     // Matching the auth routes would break the sign-in flow itself, and
     // matching static assets costs latency on requests that can never need it.
-    expect(config.matcher).toEqual(['/dashboard/:path*']);
+    //
+    // Every entry here drives something that costs money or reads private
+    // data. A whitelist rather than a rule, so widening it is a deliberate
+    // edit to this line and not a side effect of a pattern change.
+    expect(config.matcher).toEqual([
+      '/dashboard/:path*',
+      '/chat/:path*',
+      '/ai-test/:path*',
+    ]);
+  });
+
+  it('never matches the auth routes', () => {
+    /**
+     * Redirecting an unauthenticated request to `/api/auth/*` would break
+     * sign-in at the exact moment it is needed: the callback that establishes
+     * the session arrives without one, gets bounced to `/login`, and the loop
+     * never closes.
+     */
+    for (const pattern of config.matcher) {
+      expect(pattern.startsWith('/api/')).toBe(false);
+    }
   });
 });
 

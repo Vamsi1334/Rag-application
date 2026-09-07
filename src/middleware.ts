@@ -34,8 +34,15 @@ import { NextResponse, type NextRequest } from 'next/server';
  */
 const SESSION_COOKIES = ['authjs.session-token', '__Secure-authjs.session-token'];
 
-/** Paths that require a session. */
-const PROTECTED_PREFIXES = ['/dashboard'];
+/**
+ * Paths that require a session.
+ *
+ * `/ai-test` is listed alongside the others because all three drive a paid
+ * model. It was relying on its own Server Component check alone, which is the
+ * real boundary and always was; this only spares an unauthenticated visitor
+ * the flash of a page that is about to bounce them.
+ */
+const PROTECTED_PREFIXES = ['/dashboard', '/chat', '/ai-test'];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -63,5 +70,5 @@ export const config = {
    * routes themselves, costs latency on requests that can never need it, and
    * matching the auth routes would break the sign-in flow.
    */
-  matcher: ['/dashboard/:path*'],
+  matcher: ['/dashboard/:path*', '/chat/:path*', '/ai-test/:path*'],
 };

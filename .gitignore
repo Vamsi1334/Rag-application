@@ -56,3 +56,9 @@ desktop.ini
 # Local document scratch space. Never commit anything a user uploaded.
 /uploads/
 /tmp/
+
+# Source documents for ingestion.
+# A company document is not repository content, and a PDF committed once stays
+# in the history after it is deleted.
+/docs/
+!/docs/.gitkeep

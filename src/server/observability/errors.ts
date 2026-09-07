@@ -79,24 +79,57 @@ export class AppError extends Error {
   }
 }
 
-/** A required setting is missing or malformed. Almost always a deployment problem. */
+/**
+ * A required setting is missing or malformed. Almost always a deployment problem.
+ *
+ * `safeMessage` is optional and defaults to the generic sentence, for the same
+ * reason it is optional on ValidationError: naming the specific setting usually
+ * tells an attacker about the deployment and tells the user nothing they can
+ * act on.
+ *
+ * The exception is a failure the person reading it can actually fix, where
+ * saying so names no secret. "Document search is unavailable, the index is
+ * missing or still building" is one: it points at a real, fixable state without
+ * exposing a variable, a value or a host.
+ */
 export class ConfigurationError extends AppError {
   static override readonly errorName = 'ConfigurationError';
 
-  constructor(message: string, logMeta?: Record<string, unknown>) {
-    super('CONFIGURATION_ERROR', 500, 'The server is not configured correctly.', {
+  constructor(
+    message: string,
+    logMeta?: Record<string, unknown>,
+    safeMessage = 'The server is not configured correctly.',
+  ) {
+    super('CONFIGURATION_ERROR', 500, safeMessage, {
       message,
       ...(logMeta ? { logMeta } : {}),
     });
   }
 }
 
-/** The request body, query or params did not match the expected schema. */
+/**
+ * The request body, query or params did not match the expected schema.
+ *
+ * `safeMessage` is optional and defaults to the generic sentence, which is the
+ * right answer when the specific reason would tell an attacker something: which
+ * field exists, what a value was compared against, how a check is implemented.
+ *
+ * Some validation failures are not like that. "No extractable text found; the
+ * PDF appears to be scanned" reveals nothing except a fact about the file the
+ * caller just supplied, and it is the difference between a person fixing the
+ * problem in a minute and a person reading server logs. Those pass their own
+ * message. The default stays generic so the safe choice is the one you get by
+ * doing nothing.
+ */
 export class ValidationError extends AppError {
   static override readonly errorName = 'ValidationError';
 
-  constructor(message: string, logMeta?: Record<string, unknown>) {
-    super('VALIDATION_ERROR', 400, 'The request was not valid.', {
+  constructor(
+    message: string,
+    logMeta?: Record<string, unknown>,
+    safeMessage = 'The request was not valid.',
+  ) {
+    super('VALIDATION_ERROR', 400, safeMessage, {
       message,
       ...(logMeta ? { logMeta } : {}),
     });

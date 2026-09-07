@@ -1,6 +1,4 @@
-# Extractors
+# Extract
 
-`pdf.ts`, `docx.ts`, `text.ts`, and later `ocr.ts`.
-
-Every extractor returns `{ text, pages[] }` so the rest of the pipeline never
-knows or cares what the original format was.
+Empty. Format handling lives in `../../rag/extract-text.ts`, which is one file
+because one branch per format is all it needs. See `../README.md`.

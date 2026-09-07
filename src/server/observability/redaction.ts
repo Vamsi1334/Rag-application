@@ -58,6 +58,16 @@ export const ALLOWED_META_KEYS = new Set<string>([
   'mimeType',
   'fileExtension',
   'batchSize',
+  /**
+   * The CLASS NAME of a parser failure, never its message.
+   *
+   * pdf.js distinguishes `PasswordException`, `InvalidPDFException` and
+   * `MissingPDFException`, which are three quite different problems and worth
+   * knowing apart. Its error MESSAGES carry file paths and fragments of the
+   * document, so only the name is ever assigned to this field. Anything
+   * putting a parser message here has misunderstood what it is for.
+   */
+  'parserError',
 
   // retrieval
   'candidatesRequested',

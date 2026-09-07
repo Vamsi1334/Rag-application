@@ -57,6 +57,31 @@ describe('error taxonomy', () => {
     expect(serialized).not.toContain('regex');
   });
 
+  it('keeps the generic safe message unless one is deliberately supplied', () => {
+    /**
+     * The safe default has to be what you get by doing nothing, or the first
+     * hurried call site leaks a field name into an HTTP response.
+     */
+    expect(new ValidationError('field "ssn" failed regex').safeMessage).toBe(
+      'The request was not valid.',
+    );
+  });
+
+  it('lets a caller supply a specific safe message when the reason is itself safe', () => {
+    // Used by document extraction, where "the PDF appears to be scanned" tells
+    // the caller nothing except a fact about the file they just supplied, and
+    // saves them a trip to the server logs.
+    const error = new ValidationError(
+      'No extractable text found in a application/pdf document',
+      { operation: 'rag.extract' },
+      'No extractable text found. The PDF appears to be scanned.',
+    );
+
+    expect(error.safeMessage).toBe('No extractable text found. The PDF appears to be scanned.');
+    expect(error.code).toBe('VALIDATION_ERROR');
+    expect(error.httpStatus).toBe(400);
+  });
+
   it('marks anticipated failures as operational', () => {
     expect(new NotFoundError().isOperational).toBe(true);
   });

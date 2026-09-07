@@ -3,7 +3,7 @@ import 'server-only';
 import { APP_NAME, APP_VERSION, CURRENT_PHASE, CURRENT_PHASE_NAME } from '@/lib/constants';
 import { getServerEnv } from '@/server/config/env';
 import { getProviderDescriptor, type ProviderId } from '@/server/config/providers';
-import { resolveModel } from '@/server/ai/factory';
+import { resolveEmbeddingModel, resolveModel } from '@/server/ai/factory';
 import { isAppError } from '@/server/observability/errors';
 import { getRequestId } from '@/server/observability/request-context';
 
@@ -62,6 +62,8 @@ function hasProviderKey(env: ReturnType<typeof getServerEnv>, provider: Provider
       return Boolean(env.OPENAI_API_KEY);
     case 'google':
       return Boolean(env.GOOGLE_AI_API_KEY);
+    case 'voyage':
+      return Boolean(env.VOYAGE_API_KEY);
     default:
       // Local providers need no credential.
       return true;
@@ -132,11 +134,38 @@ export function buildHealthReport(): HealthReport {
     };
 
     const embedding = getProviderDescriptor(env.EMBEDDING_PROVIDER);
+    /**
+     * Resolved the same way the factory resolves it, not read straight from
+     * the environment.
+     *
+     * EMBEDDING_MODEL is an optional override now that the model is chosen per
+     * provider, so reading it directly reports the string "undefined" on a
+     * correctly configured install. Asking the same function the application
+     * asks means this cannot claim a different model than the one actually
+     * used.
+     */
+    const embeddingModel = resolveEmbeddingModel(env, env.EMBEDDING_PROVIDER);
+
+    // Voyage embeds but cannot chat, so the catalog's `implemented` flag alone
+    // is not the signal here: what matters is whether an embedding provider
+    // exists for the configured vendor, and whether its credential is set.
+    const embeddingImplemented = env.EMBEDDING_PROVIDER === 'voyage';
+    const embeddingKeyMissing =
+      embedding.requiresApiKey &&
+      !env.EMBEDDING_API_KEY &&
+      !hasProviderKey(env, env.EMBEDDING_PROVIDER);
+
     checks.embeddings = {
-      // Ollama's CHAT provider is built; its embedding provider is not, so the
-      // catalog's `implemented` flag is not the right signal here.
-      status: 'not_implemented',
-      detail: `Configured provider "${embedding.label}" with model "${env.EMBEDDING_MODEL}" at ${env.EMBEDDING_DIMENSIONS} dimensions. Embeddings arrive in a later phase.`,
+      status: !embeddingImplemented
+        ? 'not_implemented'
+        : embeddingKeyMissing
+          ? 'not_configured'
+          : 'ok',
+      detail: !embeddingImplemented
+        ? `Configured provider "${embedding.label}" has no embedding implementation yet.`
+        : embeddingKeyMissing
+          ? `Provider "${embedding.label}" is selected but its API key is not set.`
+          : `Provider "${embedding.label}" with model "${embeddingModel}" at ${env.EMBEDDING_DIMENSIONS} dimensions.`,
       phase: 5,
     };
   } catch (error) {

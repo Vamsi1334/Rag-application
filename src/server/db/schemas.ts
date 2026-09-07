@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { DOCUMENT_STATUSES, MESSAGE_ROLES } from './types';
+import { DOCUMENT_SCOPES, DOCUMENT_STATUSES, MESSAGE_ROLES } from './types';
 
 /**
  * Write-time validation.
@@ -39,6 +39,11 @@ export const newUserSchema = z.object({
 export const newDocumentSchema = z.object({
   userId: objectIdString,
   /**
+   * Defaults to `user`, the private case. A caller has to ask explicitly for
+   * `shared`, so a forgotten field can never widen who can read a document.
+   */
+  scope: z.enum(DOCUMENT_SCOPES).default('user'),
+  /**
    * Length-capped because it comes from a filename the user controls and ends
    * up in the UI, in logs and eventually in a citation.
    */
@@ -73,6 +78,10 @@ export const newDocumentChunkSchema = z.object({
    */
   embedding: z.array(z.number().finite()).optional(),
   embeddingModel: z.string().min(1).max(200).optional(),
+  scope: z.enum(DOCUMENT_SCOPES).default('user'),
+  sourceName: z.string().min(1).max(255).optional(),
+  /** 1-based. Never synthesised when the format does not supply one. */
+  pageNumber: z.number().int().positive().optional(),
 });
 
 export const newConversationSchema = z.object({
@@ -88,7 +97,16 @@ export const newMessageSchema = z.object({
 });
 
 export type NewUserInput = z.infer<typeof newUserSchema>;
-export type NewDocumentInput = z.infer<typeof newDocumentSchema>;
-export type NewDocumentChunkInput = z.infer<typeof newDocumentChunkSchema>;
+/**
+ * `z.input`, not `z.infer`.
+ *
+ * `z.infer` is the type AFTER parsing, where every defaulted field is filled
+ * in and therefore required. That is right for what comes out of `.parse()`
+ * and wrong for what a caller passes in: it would force every call site to
+ * supply `scope: 'user'` explicitly, which is exactly what the default exists
+ * to avoid.
+ */
+export type NewDocumentInput = z.input<typeof newDocumentSchema>;
+export type NewDocumentChunkInput = z.input<typeof newDocumentChunkSchema>;
 export type NewConversationInput = z.infer<typeof newConversationSchema>;
 export type NewMessageInput = z.infer<typeof newMessageSchema>;

@@ -1,6 +1,7 @@
-import { registerLLMProvider } from '../registry';
+import { registerEmbeddingProvider, registerLLMProvider } from '../registry';
 import { createOllamaProvider } from './ollama';
 import { createOpenAICompatibleProvider } from './openai-compatible';
+import { createVoyageEmbeddingProvider } from './voyage';
 
 /**
  * Provider registration.
@@ -30,13 +31,23 @@ export function registerProviders(): void {
   registerLLMProvider('openai', createOpenAICompatibleProvider);
 
   // Google's Gemini API is NOT OpenAI-compatible: different paths, different
-  // request shape, key in a header of its own. It needs its own file, and it
-  // arrives with embeddings.
+  // request shape, key in a header of its own. It would need its own file.
   //   registerLLMProvider('google', createGoogleProvider);
   //   registerEmbeddingProvider('google', createGoogleEmbeddingProvider);
+
+  /**
+   * Embeddings, registered into a separate map from generation.
+   *
+   * Voyage appears only here and Groq only above, which is the registry
+   * expressing something true: neither vendor can do the other's job. Pointing
+   * LLM_PROVIDER at Voyage fails at configuration time with a message saying
+   * so, rather than at the first request with a 404.
+   */
+  registerEmbeddingProvider('voyage', createVoyageEmbeddingProvider);
 
   registered = true;
 }
 
 export { createOllamaProvider, getOllamaStatus } from './ollama';
 export { createOpenAICompatibleProvider } from './openai-compatible';
+export { createVoyageEmbeddingProvider, VOYAGE_SUPPORTED_DIMENSIONS } from './voyage';
